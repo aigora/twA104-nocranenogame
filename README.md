@@ -4,9 +4,9 @@ El proyecto se va a centrar en construir una grúa móvil en miniatura para demo
 
 ## Integrantes del equipo
 
-Miguel Ángel Asensio Vaquero (54492)
+Miguel Ángel Asensio Vaquero
 
-Rodrigo Batal Fernández (54502)
+Rodrigo Batal Fernández
 
 ## Objetivos del trabajo
 
