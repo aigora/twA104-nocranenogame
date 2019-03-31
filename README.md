@@ -1,6 +1,6 @@
 # Grúa Móvil
 
-El proyecto se va a centrar en construir una grúa móvil en miniatura para demostrar las capacidades del Arduino y nusetras habilidadeds de programación.
+El proyecto se va a centrar en construir una grúa móvil en miniatura para demostrar las capacidades del Arduino y nuestras habilidadeds de programación.
 
 ## Integrantes del equipo
 
