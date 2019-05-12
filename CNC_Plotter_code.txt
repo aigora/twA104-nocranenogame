@@ -1,0 +1,573 @@
+#include <Servo.h> //Librería y objeto del servo (no había otra forma posible de hacerlo)
+Servo lapiz;
+
+#define GREEN 5 //Pilotos de sistema
+#define YELLOW 4
+#define RED 3
+
+#define TOPX 8 //Finales de carrera
+#define TOPY 9
+#define BOTX 10
+#define BOTY 11
+
+#define JOYSTICKX A9 //Entradas analógicas del joystick y botón respectivo
+#define JOYSTICKY A8
+#define JOYSTICKB 2
+
+#define RESETPIN 13 //Pin de reseteo del sistema
+
+#define StepperX 28 //Salidas del motor X (28,29,30,31)
+#define StepperY 38 //Salidas del motor Y (38,39,40,41)
+#define FULLTURN 8 //Número de pasos a dar para que cualquier motor dé una vuelta completa
+#define LIMITE 450 //Límite superior de las coordenadas
+
+#define SERVO 6 //Conexión para la comunicación con el servo
+#define ARRIBA 75 //Posición en la que el lápiz no toca el papel
+#define ABAJO 45 //Posición en la que el lápiz toca el papel
+
+// Estructuras de control
+struct secuencia //Secuencia en la entrada del motor
+{
+  int v[4]; //Vectores de activación para las entradas del motor con sus posibles combinaciones
+};
+typedef struct //Datos de control de cada eje
+{
+  int paso, posicion;
+  char motor;  
+}eje;
+
+// Prototipos de las funciones
+void sys(int);
+void mueve(int, eje*);
+void ir_a(int, int, eje*, eje*);
+void ir_a_referencia(eje*, eje*);
+void ir_recto_a(int, int, eje*, eje*);
+void segmentos(eje*, eje*);
+void lagrange(eje*, eje*);
+void joystick(eje*, eje*);
+void cuadricula(eje*, eje*);
+//---------------------------------------------------------------------------------------------------------------------------------------------------------//
+void setup()
+{
+  Serial.begin(9600); //Inicialización de la consola de comandos
+
+  pinMode(GREEN,OUTPUT);
+  pinMode(YELLOW,OUTPUT);
+  pinMode(RED,OUTPUT);
+
+  pinMode(TOPX,INPUT_PULLUP);
+  pinMode(TOPY,INPUT_PULLUP);
+  pinMode(BOTX,INPUT_PULLUP);
+  pinMode(BOTY,INPUT_PULLUP);
+  
+  pinMode(JOYSTICKB, INPUT_PULLUP);
+  
+  for(int i=0;i<4;i++)
+  {
+    pinMode(StepperX+i,OUTPUT);
+    pinMode(StepperY+i,OUTPUT);
+  }
+
+  pinMode(RESETPIN, OUTPUT);
+  digitalWrite(RESETPIN, HIGH);
+
+  lapiz.attach(SERVO);
+}
+//---------------------------------------------------------------------------------------------------------------------------------------------------------//
+void loop()
+{
+  int optn, *poptn;
+  eje x, y;
+  
+  poptn = &optn;
+  
+  x.motor = 'x'; //Identificador interno de cada motor
+  y.motor = 'y';
+
+  ir_a_referencia(&x,&y);
+  
+  Serial.println("Elija la opción que desee realizar:");
+  Serial.println("\tTrazado de segmentos por coordenadas -> 1");
+  Serial.println("\tTrazado de un polinomio de Lagrange a partir de los nodos introducidos -> 2");
+  Serial.println("\tControl a través de un joystick con botón -> 3 ");
+  Serial.println("\tSalir -> 0");
+  Serial.print("Su opción: ");
+  while(Serial.available() == 0){}
+  *poptn = Serial.parseInt();
+  Serial.parseInt();
+  Serial.print("");
+  Serial.println(*poptn);
+  
+  do
+  {
+    switch (*poptn)
+    {
+      case(1):
+        segmentos(&x,&y);
+        *poptn = 0;
+        break;
+      case(2):
+        lagrange(&x,&y);
+        *poptn = 0;
+        break;
+      case(3):
+        joystick(&x,&y);
+        *poptn = 0;
+        break;
+      case(0):
+        Serial.println("Usted ha elegido salir");
+        break;
+      default:
+        Serial.println("Opción no válida, por favor, escoja otra: ");
+        break;
+    }
+  }while(*poptn != 0);
+
+  Serial.println("El programa ha finalizado, para continuar introduzca cualquier caracter");
+  while(Serial.available() > 0){}
+  Serial.parseInt();
+}
+//--------------------------------------------------------------------------------------------------------------------------------------------------------//
+void mueve(int avance_destinado, eje *m) //Movimiento del motor --> ("nº pasos","motor, posicion y paso")
+{ 
+  int i, j, avance_real = 0;
+  int boton, *pboton, limite, *plimite, motor, *pmotor;
+  struct secuencia s[8]={{1,0,0,0},  /*0*/
+                         {1,1,0,0},  /*1*/
+                         {0,1,0,0},  /*2*/
+                         {0,1,1,0},  /*3*/
+                         {0,0,1,0},  /*4*/
+                         {0,0,1,1},  /*5*/
+                         {0,0,0,1},  /*6*/
+                         {1,0,0,1}}; /*7*/
+
+  pboton = & boton;
+  plimite = & limite;
+  pmotor = & motor;
+  
+  if(m->motor == 'x')
+  {
+    *pmotor = StepperX;
+    if(avance_destinado > 0)
+    {
+      *pboton = TOPX;
+      *plimite = LIMITE;
+    }
+    else
+    {
+      *pboton = BOTX;
+      *plimite = 0;
+    }
+  }
+  else if(m->motor == 'y')
+  {
+    *pmotor = StepperY;
+    if(avance_destinado >  0)
+    {
+      *pboton = TOPY;
+      *plimite = LIMITE;
+    }
+    else
+    {
+      *pboton = BOTY;
+      *plimite = 0;
+    }
+  }
+  
+  for(j=0;j<abs(avance_destinado);j++)
+  {
+    
+    for(i=0;i<4;i++)
+    {
+      if(digitalRead(*pboton) == HIGH && m->posicion != *plimite) //Avanza secuencia si no se encuentra en el final del recorrido
+          digitalWrite(*pmotor+i,s[m->paso].v[i]);
+    }
+    delay(5); //Cinco milisegundos son (suelen ser) el tiempo mínimo permitido entre secuencias
+    if(digitalRead(*pboton) == HIGH && m->posicion != *plimite) //Avanza/Retrocede paso sólo si avanza secuencia (misma condición)
+    {
+      if(avance_destinado > 0)
+      {
+        m->paso = (m->paso+1)%8;
+        avance_real++;
+      }
+      else if(avance_destinado < 0)
+      {
+        m->paso = (m->paso-1+8)%8;
+        avance_real--;
+      }
+    }
+  }
+  m->posicion += avance_real;
+}
+//--------------------------------------------------------------------------------------------------------------------------------------------------------//
+void ir_a(int xf, int yf, eje *mx, eje *my) //Une la posición actual y la definida en dos movimientos (eje x, eje y)
+{
+  int alphax=xf-mx->posicion, alphay=yf-my->posicion;
+  int *palphax, *palphay;
+
+  palphax = &alphax;
+  palphay = &alphay;
+
+  mueve(*palphax,&(*mx));
+  mueve(*palphay,&(*my));
+}
+//--------------------------------------------------------------------------------------------------------------------------------------------------------//
+void ir_recto_a(int xf, int yf, eje *mx, eje *my) //Une el punto actual y el marcado con una línea "recta"
+{
+  int xi=mx->posicion, yi=my->posicion, *pxi, *pyi;
+  float alphax=xf-xi, alphay=yf-yi, *palphax, *palphay;
+  float x, y, *px, *py;
+
+  px = &x;
+  py = &y;
+  pxi = &xi;
+  pyi = &yi;
+  palphax = &alphax;
+  palphay = &alphay;
+  
+  if(abs(*palphax) >= abs(*palphay))
+  {
+    for(int i=1;i<=abs(*palphax);i++)
+    {
+      *px = *pxi + (abs(*palphax)/(*palphax)) * i;
+      *py =(*palphay/(*palphax)) * (*px - *pxi) + *pyi;
+      Serial.print(*px);
+      Serial.print("\t");
+      Serial.println(*py);
+      ir_a((int)*px,(int)*py,&(*mx),&(*my)); //y=m(x-xi)+yi
+    }
+  }
+  else
+  {
+    for(int i=1;i<=abs(*palphay);i++)
+    {
+      *py = *pyi + (abs(*palphay)/(*palphay)) * i;
+      *px = (float)(*palphax/(*palphay)) * (*py - *pyi) + *pxi;
+      Serial.print(*px);
+      Serial.print("\t");
+      Serial.println(*py);
+      ir_a((int)*px,(int)*py,&(*mx),&(*my)); //x=(y-yi)/m+xi
+    }
+  }
+}
+//--------------------------------------------------------------------------------------------------------------------------------------------------------//
+void sys(int s) //Status del sistema --> 1-OK -1-En proceso 0-ERROR
+{
+  switch(s)
+  {
+    case 1:
+      digitalWrite(GREEN,HIGH);
+      digitalWrite(YELLOW,LOW);
+      digitalWrite(RED,LOW);
+      break;
+    case -1:
+      digitalWrite(GREEN,LOW);
+      digitalWrite(YELLOW,HIGH);
+      digitalWrite(RED,LOW);
+      break;
+    default:
+      digitalWrite(GREEN,LOW);
+      digitalWrite(YELLOW,LOW);
+      digitalWrite(RED,HIGH);
+      Serial.println("ERROR");
+      delay(5000);
+      digitalWrite(RESETPIN, LOW); //Dispara el reseteo del sistema
+  }
+}
+//--------------------------------------------------------------------------------------------------------------------------------------------------------//
+void ir_a_referencia(eje *mx, eje *my) //Mueve el puntero a la posición de referencia (sin referencia previa)
+{
+  int n=0, flagx = 0, flagy = 0;
+
+  mx->posicion = 1000; //Establece una posición inicial por encima del límite para poder retroceder libremente hasta la referencia
+  my->posicion = 0;
+  sys(-1);
+  lapiz.write(ARRIBA);
+  delay(500);
+  Serial.println("Procediendo al ajuste de los ejes, por favor, espere...");
+  mx->paso = 0; //Inicia el paso en un punto, aunque no sea el correcto para avanzar la secuencia hasta "encarrilar" el motor
+  my->paso = 0;
+  do
+  {
+    mueve(-100, &(*mx)); //Retrocede hasta el límite inferior y coordina el contador de pasos
+    delay(100);
+    if(digitalRead(BOTX)== LOW)
+      flagx=1;
+    mueve(100, &(*my));
+    delay(100);
+    if(digitalRead(TOPY)== LOW)
+      flagy=1;
+    n++;
+    if( n == 6)
+    {
+      Serial.println("\tNo se ha logrado alcanzar la posición de referencia");
+      sys(0);
+    }
+  }while((flagx == 0) || (flagy == 0));
+  sys(1);
+  mx->posicion=0;
+  my->posicion=LIMITE;
+  Serial.println("Listo!!");
+}
+//--------------------------------------------------------------------------------------------------------------------------------------------------------//
+void segmentos(eje *mx, eje *my)
+{
+  int i;
+  int n, *pn, *nx, *ny;
+
+  pn = &n;
+  
+  Serial.print("Introduzca el número de puntos a unir(deben estar comprendidos entre 0 y 450): ");
+  while(Serial.available() == 0){}
+  *pn = Serial.parseInt();
+  Serial.parseInt();
+  Serial.print("");
+  Serial.println(*pn);
+  nx = (int*)malloc(*pn*sizeof(int));
+  ny = (int*)malloc(*pn*sizeof(int));
+  for(i=0;i<n;i++)
+  {
+    sys(1);
+    Serial.print("Vector número: ");
+    Serial.println(i+1);
+    do
+    {
+      Serial.print("\tComponente x: ");
+      while(Serial.available() == 0){}
+      *(nx+i) = Serial.parseInt();
+      Serial.parseInt();
+      Serial.print("");
+      Serial.println(*(nx+i));
+      Serial.print("\tComponente y: ");
+      while(Serial.available() == 0){}
+      *(ny+i) = Serial.parseInt();
+      Serial.parseInt();
+      Serial.print("");
+      Serial.println(*(ny+i));
+      if((*(nx+i) > LIMITE) || (*(ny+i) > LIMITE) || (*(nx+i) < 0) || (*(ny+i) <0))
+      {
+        Serial.println("Valores no válidos, por favor, introduzca unos nuevos");
+        sys(-1);
+        delay(100);
+      }
+    }while((*(nx+i) > LIMITE) || (*(ny+i) > LIMITE) || (*(nx+i) < 0) || (*(ny+i) <0));
+  }
+  Serial.println("Calculando..");
+  sys(-1);
+  for(i=0;i<*pn;i++)
+  {
+    ir_a(*(nx+i),*(ny+i),&(*mx),&(*my));
+    lapiz.write(ABAJO);
+    delay(500);
+    lapiz.write(ARRIBA);
+    delay(500);
+  }
+  Serial.println("Dibujando...");
+  ir_a(*(nx),*(ny),&(*mx),&(*my));
+  lapiz.write(ABAJO);
+  delay(500);
+  for(i=1;i<*pn;i++)
+  {
+    ir_recto_a(*(nx+i),*(ny+i),&(*mx),&(*my));
+  }
+  lapiz.write(ARRIBA);
+  delay(500);
+  ir_a(LIMITE,LIMITE,&(*mx),&(*my));
+  Serial.println("Listo!!");
+  sys(1);
+  free(nx);
+  free(ny);
+}
+//--------------------------------------------------------------------------------------------------------------------------------------------------------//
+void lagrange(eje *mx, eje *my)
+{
+  int i, j, k;
+  int n, *pn, *nx, *ny;
+  float px[LIMITE+1], *productorio;
+
+  pn = &n;
+
+  Serial.println("Dibujando la cuadrícula...");
+  cuadricula(&(*mx),&(*my));
+  Serial.print("Introduzca el número de nodos con los que se va a trabajar (deben estar comprendidos entre 0 y 450): ");
+  while(Serial.available() == 0){}
+  *pn = Serial.parseInt();
+  Serial.parseInt();
+  Serial.print("");
+  Serial.println(*pn);
+  nx = (int*)malloc(*pn*sizeof(int));
+  ny = (int*)malloc(*pn*sizeof(int));
+  productorio = (float*)malloc(n*sizeof(float));
+  for(i=0;i<n;i++)
+  {
+    sys(1);
+    Serial.print("Vector número: ");
+    Serial.println(i+1);
+    do
+    {
+      Serial.print("\tComponente x: ");
+      while(Serial.available() == 0){}
+      *(nx+i) = Serial.parseInt();
+      Serial.parseInt();
+      Serial.print("");
+      Serial.println(*(nx+i));
+      Serial.print("\tComponente y: ");
+      while(Serial.available() == 0){}
+      *(ny+i) = Serial.parseInt();
+      Serial.parseInt();
+      Serial.print("");
+      Serial.println(*(ny+i));
+      if((*(nx+i) > LIMITE) || (*(ny+i) > LIMITE) || (*(nx+i) < 0) || (*(ny+i) <0)) //CAMBIAR
+      {
+        Serial.println("Valores no válidos, por favor, introduzca unos nuevos");
+        sys(-1);
+        delay(100);
+      }
+    }while((*(nx+i) > LIMITE) || (*(ny+i) > LIMITE) || (*(nx+i) < 0) || (*(ny+i) <0));
+  }
+  Serial.println("Calculando..");
+  sys(-1);
+  for(i=0;i<*pn;i++)
+  {
+    ir_a(*(nx+i),*(ny+i),&(*mx),&(*my));
+    lapiz.write(ABAJO);
+    delay(500);
+    lapiz.write(ARRIBA);
+    delay(500);
+  }
+  for(i=0;i<=LIMITE;i++)
+  {
+    px[i] = 0;
+    for(j=0;j<n;j++)
+    {
+      *(productorio+j) = 1;
+      for(k=0;k<*pn;k++)
+      {
+        if(k != j)
+        {
+          *(productorio+j)*=(float)(i-*(nx+k))/(*(nx+j)-*(nx+k));
+        }
+      }
+      *(productorio+j)*=(float)*(ny+j);
+    }
+    for(j=0;j<*pn;j++)
+    {
+      px[i]+=*(productorio+j);
+    }
+    if(px[i] > LIMITE)
+      px[i] = LIMITE;
+    if(px[i] < 0)
+      px[i] = 0;
+  }
+  ir_a(0,(int)px[0],&(*mx),&(*my));
+  Serial.println("Dibujando...");
+  Serial.print(0);
+  Serial.print("\t");
+  Serial.println((int)px[0]);
+  lapiz.write(ABAJO);
+  delay(500);
+  for(i=1;i<=LIMITE;i++)
+  {
+    ir_a(i,(int)px[i],&(*mx),&(*my));
+    Serial.print(i);
+    Serial.print("\t");
+    Serial.println((int)px[i]);
+  }
+  lapiz.write(ARRIBA);
+  delay(500);
+  ir_a(LIMITE,LIMITE,&(*mx),&(*my));
+  Serial.println("Listo!!");
+  sys(1);
+  free(nx);
+  free(ny);
+  free(productorio);
+}
+//--------------------------------------------------------------------------------------------------------------------------------------------------------//
+void cuadricula(eje *mx, eje *my)
+{
+  int i;
+  
+  ir_a(0,0,&(*mx),&(*my));
+  
+  for(i=LIMITE;i>0;i-=50)
+  {
+    ir_a(i,10,&(*mx),&(*my));
+    lapiz.write(ABAJO);
+    delay(500);
+    ir_a(i,0,&(*mx),&(*my));
+    ir_a(i-50,0,&(*mx),&(*my));
+    lapiz.write(ARRIBA);
+    delay(500);
+  }
+  for(i=LIMITE;i>0;i-=50)
+  {
+    ir_a(10,i,&(*mx),&(*my));
+    lapiz.write(ABAJO);
+    delay(500);
+    ir_a(0,i,&(*mx),&(*my));
+    ir_a(0,i-50,&(*mx),&(*my));
+    lapiz.write(ARRIBA);
+    delay(500);
+  }
+  ir_a(0,0,&(*mx),&(*my));
+  Serial.println("Listo!!");
+}
+//--------------------------------------------------------------------------------------------------------------------------------------------------------//
+void joystick(eje *mx, eje *my)
+{
+  boolean salir = false;
+  int joystickx, joysticky, lapizpos = ARRIBA, *pjoystickx, *pjoysticky, *plapizpos;
+
+  pjoystickx = &joystickx;
+  pjoysticky = &joysticky;
+  plapizpos = &lapizpos;
+
+  Serial.println("Mueve el joystick para controlar la posición del boli, y pulsa para subir/bajar el boli");
+  Serial.println("\tPara salir, introduce por consola cualquier valor o caracter");
+  sys(1);
+  do
+  {
+    *pjoystickx = map(analogRead(JOYSTICKX),0,1023,-100,100);
+    *pjoysticky = map(analogRead(JOYSTICKY),0,1023,-100,100);
+    if(digitalRead(JOYSTICKB) == LOW)
+    {
+      if(*plapizpos == ABAJO)
+      {
+        *plapizpos = ARRIBA;
+      }
+      else if(*plapizpos == ARRIBA)
+      {
+        *plapizpos = ABAJO;
+      }
+      lapiz.write(*plapizpos);
+      delay(500);
+    }
+    
+    if(*pjoystickx >= 75)
+      mueve(2,&(*mx));
+    else if(*pjoystickx >= 25)
+      mueve(1,&(*mx));
+    if(*pjoysticky >= 75)
+      mueve(2,&(*my));
+    else if(*pjoysticky >= 25)
+      mueve(1,&(*my));
+      
+    if(*pjoystickx <= -75)
+      mueve(-2,&(*mx));
+    else if(*pjoystickx <= -25)
+      mueve(-1,&(*mx));
+    if(*pjoysticky <= -75)
+      mueve(-2,&(*my));
+    else if(*pjoysticky <= -25)
+      mueve(-1,&(*my));
+      
+     if(Serial.available() > 0)
+     {
+      Serial.parseInt();
+      salir = true;
+     }
+  }while(salir == false);
+  lapiz.write(ARRIBA);
+  delay(500);
+  ir_a(LIMITE,LIMITE,&(*mx),&(*my));
+}
